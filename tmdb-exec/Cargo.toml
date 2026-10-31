@@ -1,0 +1,21 @@
+[package]
+name = "tmdb-exec"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Volcano + vectorized execution engine for tmDB"
+
+[dependencies]
+tmdb-sql       = { workspace = true }
+tmdb-catalog   = { workspace = true }
+tmdb-timestore = { workspace = true }
+sqlparser          = { workspace = true }
+anyhow             = { workspace = true }
+thiserror          = { workspace = true }
+bytes              = { workspace = true }
+tracing            = { workspace = true }
+dashmap            = { workspace = true }
+parking_lot        = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

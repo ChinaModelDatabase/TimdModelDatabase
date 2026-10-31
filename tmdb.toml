@@ -1,0 +1,54 @@
+# tmDB configuration file
+
+[server]
+listen           = "0.0.0.0:5432"
+listen_mysql     = "0.0.0.0:3306"
+listen_http      = "0.0.0.0:8080"
+max_connections  = 4096
+default_dialect  = "auto"
+
+[wire.pg]
+enabled          = true
+auth_methods     = ["scram-sha-256", "md5", "sm3"]
+max_bind_params  = 65535
+copy_enabled     = true
+
+[wire.mysql]
+enabled                 = true
+auth_plugins            = ["mysql_native_password", "sha256_password", "caching_sha2_password"]
+default_charset         = "utf8mb4"
+collation               = "utf8mb4_bin"
+sql_mode                = "STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION"
+autocommit_default      = true
+max_allowed_packet      = "64MB"
+prepared_stmt_enabled   = true
+
+[wire.mysql.system_vars]
+@@version              = "8.0.35-tmdb-1.0"
+@@version_comment      = "tmDB 信创时序数据库"
+@@time_zone            = "+08:00"
+
+[storage]
+data_dir        = "/data/tmdb"
+chunk_interval  = "1 day"
+segment_target  = "256MB"
+row_group_rows  = 4096
+page_size       = "64KB"
+default_encoding = "balanced"
+
+[query]
+default_timeout        = "30s"
+max_memory_per_query   = "2GB"
+spill_to_disk          = true
+plan_cache_size        = 1024
+
+[distributed]
+enabled        = true
+shard_key      = "database"
+replication    = 3
+rebalance_rate = "50MB/s"
+
+[security]
+sm_tls        = true
+sm_encrypt    = true
+audit_log     = "/var/log/tmdb/audit.log"

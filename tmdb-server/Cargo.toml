@@ -1,0 +1,23 @@
+[package]
+name = "tmdb-server"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Connection management + session API for tmDB"
+
+[dependencies]
+tmdb-sql       = { workspace = true }
+tmdb-catalog   = { workspace = true }
+tmdb-txn       = { workspace = true }
+tmdb-exec      = { workspace = true }
+tmdb-timestore = { workspace = true }
+anyhow             = { workspace = true }
+thiserror          = { workspace = true }
+tokio              = { workspace = true }
+tracing            = { workspace = true }
+parking_lot        = { workspace = true }
+dashmap            = { workspace = true }
+serde              = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

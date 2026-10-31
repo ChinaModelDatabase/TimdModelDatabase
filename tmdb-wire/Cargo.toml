@@ -1,0 +1,26 @@
+[package]
+name = "tmdb-wire"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "PostgreSQL + MySQL wire protocol implementation for tmDB"
+
+[dependencies]
+tmdb-exec    = { workspace = true }
+tmdb-server  = { workspace = true }
+tmdb-timestore = { workspace = true }
+anyhow        = { workspace = true }
+thiserror     = { workspace = true }
+bytes        = { workspace = true }
+byteorder    = { workspace = true }
+tokio        = { workspace = true }
+tokio-util   = { workspace = true }
+tracing      = { workspace = true }
+sha2         = { workspace = true }
+rand         = { workspace = true }
+rustls       = { workspace = true }
+rustls-pemfile = { workspace = true }
+tokio-rustls = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

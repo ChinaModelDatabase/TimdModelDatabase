@@ -1,0 +1,18 @@
+[package]
+name = "tmdb-dist"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Distributed: Raft replication + sharding + rebalance for tmDB"
+
+[dependencies]
+tmdb-exec = { workspace = true }
+thiserror     = { workspace = true }
+anyhow        = { workspace = true }
+tokio         = { workspace = true }
+tracing       = { workspace = true }
+serde         = { workspace = true }
+serde_json    = { workspace = true }
+bincode       = { workspace = true }
+bytes         = { workspace = true }
+parking_lot   = { workspace = true }

@@ -1,0 +1,15 @@
+[package]
+name = "tmdb-compat"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Migration: Influx/Prometheus/TDengine/MySQL/PG import for tmDB"
+
+[dependencies]
+tmdb-sql = { workspace = true }
+anyhow       = { workspace = true }
+thiserror    = { workspace = true }
+tracing      = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

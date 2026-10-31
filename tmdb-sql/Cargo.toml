@@ -1,0 +1,12 @@
+[package]
+name = "tmdb-sql"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "SQL parser + dialect normalization for tmDB"
+
+[dependencies]
+sqlparser = { workspace = true }
+anyhow    = { workspace = true }
+thiserror = { workspace = true }
+tracing   = { workspace = true }

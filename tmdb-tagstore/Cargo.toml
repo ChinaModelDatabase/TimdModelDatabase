@@ -1,0 +1,16 @@
+[package]
+name = "tmdb-tagstore"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Tag dictionary + inverted index + bloom filter for tmDB"
+
+[dependencies]
+tmdb-timestore = { workspace = true }
+anyhow             = { workspace = true }
+thiserror          = { workspace = true }
+serde              = { workspace = true }
+parking_lot        = { workspace = true }
+roaring            = { workspace = true }
+ahash              = { workspace = true }
+tracing            = { workspace = true }

@@ -1,0 +1,14 @@
+# Rust build artifacts
+/target/
+
+# Oversized analysis dump (918MB) — exceeds GitHub's 100MB per-file limit
+/_batch_raw.txt
+
+# Code-similarity scan artifacts (22MB total, regenerable PowerShell CLIXML dumps)
+/_classified.xml
+/_hits.xml
+
+# OS / editor noise
+Thumbs.db
+.DS_Store
+*.rs.bk

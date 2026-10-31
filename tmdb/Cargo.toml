@@ -1,0 +1,30 @@
+[package]
+name = "tmdb"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "tmDB - 信创时序数据库"
+
+[[bin]]
+name = "tmdb"
+path = "src/main.rs"
+
+[dependencies]
+tmdb-sql       = { workspace = true }
+tmdb-catalog   = { workspace = true }
+tmdb-txn       = { workspace = true }
+tmdb-timestore = { workspace = true }
+tmdb-tagstore  = { workspace = true }
+tmdb-rowstore  = { workspace = true }
+tmdb-exec      = { workspace = true }
+tmdb-wire      = { workspace = true }
+tmdb-server    = { workspace = true }
+tmdb-crypto    = { workspace = true }
+tmdb-compat    = { workspace = true }
+tokio              = { workspace = true }
+tracing            = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow             = { workspace = true }
+clap               = { workspace = true }
+toml               = { workspace = true }
+serde              = { workspace = true }

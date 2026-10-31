@@ -1,0 +1,13 @@
+[package]
+name = "tmdb-lp"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "InfluxDB Line Protocol parser and ingest path for tmDB"
+
+[dependencies]
+tmdb-timestore = { workspace = true }
+tracing             = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

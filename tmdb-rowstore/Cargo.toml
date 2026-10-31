@@ -1,0 +1,15 @@
+[package]
+name = "tmdb-rowstore"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Row-oriented relation table engine for tmDB"
+
+[dependencies]
+tmdb-txn = { workspace = true }
+anyhow       = { workspace = true }
+thiserror    = { workspace = true }
+bytes        = { workspace = true }
+parking_lot  = { workspace = true }
+serde        = { workspace = true }
+tracing      = { workspace = true }

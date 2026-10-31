@@ -1,0 +1,99 @@
+[workspace]
+members = [
+    "tmdb",
+    "tmdb-sql",
+    "tmdb-catalog",
+    "tmdb-txn",
+    "tmdb-timestore",
+    "tmdb-tagstore",
+    "tmdb-rowstore",
+    "tmdb-exec",
+    "tmdb-lp",
+    "tmdb-wire",
+    "tmdb-server",
+    "tmdb-dist",
+    "tmdb-crypto",
+    "tmdb-compat",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/tmDB/tmDB"
+rust-version = "1.75"
+
+[workspace.dependencies]
+# Internal crates
+tmdb-sql       = { path = "tmdb-sql" }
+tmdb-catalog   = { path = "tmdb-catalog" }
+tmdb-txn       = { path = "tmdb-txn" }
+tmdb-timestore = { path = "tmdb-timestore" }
+tmdb-tagstore  = { path = "tmdb-tagstore" }
+tmdb-rowstore  = { path = "tmdb-rowstore" }
+tmdb-exec      = { path = "tmdb-exec" }
+tmdb-lp        = { path = "tmdb-lp" }
+tmdb-wire      = { path = "tmdb-wire" }
+tmdb-server    = { path = "tmdb-server" }
+tmdb-dist      = { path = "tmdb-dist" }
+tmdb-crypto    = { path = "tmdb-crypto" }
+tmdb-compat    = { path = "tmdb-compat" }
+
+# SQL parser
+sqlparser = { version = "0.52", features = ["visitor"] }
+
+# Compression (pure Rust preferred for 信创 cross-compilation)
+ruzstd   = "0.7"
+lz4_flex = "0.11"
+zstd     = "0.13"
+
+# Serialization
+serde      = { version = "1", features = ["derive"] }
+serde_json = "1"
+bincode    = "1"
+
+# Async runtime
+tokio       = { version = "1", features = ["full"] }
+tokio-util  = "0.7"
+tokio-rustls = "0.26"
+rustls      = { version = "0.23", default-features = false, features = ["std", "ring"] }
+rustls-pemfile = "2"
+
+# Network
+bytes     = "1"
+byteorder = "1"
+
+# Error handling
+thiserror = "2"
+anyhow    = "1"
+
+# Logging / Tracing
+tracing           = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Hashing / Checksums
+crc32fast = "1"
+sha2      = "0.10"
+
+# Data structures
+roaring   = "0.10"
+fst       = "0.4"
+hashbrown = "0.15"
+ahash     = "0.8"
+
+# Concurrency
+parking_lot = "0.12"
+dashmap     = "6"
+
+# Utilities
+bytesize = "1"
+
+# Config / CLI
+toml = "0.8"
+clap = { version = "4", features = ["derive"] }
+
+# Testing
+proptest = "1"
+rand     = "0.8"
+tempfile = "3"

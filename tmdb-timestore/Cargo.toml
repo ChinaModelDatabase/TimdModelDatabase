@@ -1,0 +1,29 @@
+[package]
+name = "tmdb-timestore"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Columnar time-series storage engine for tmDB"
+
+[dependencies]
+thiserror   = { workspace = true }
+anyhow      = { workspace = true }
+bytes       = { workspace = true }
+byteorder   = { workspace = true }
+crc32fast   = { workspace = true }
+sha2        = { workspace = true }
+ruzstd      = { workspace = true }
+lz4_flex    = { workspace = true }
+zstd        = { workspace = true }
+serde       = { workspace = true }
+bincode     = { workspace = true }
+tracing     = { workspace = true }
+parking_lot = { workspace = true }
+roaring     = { workspace = true }
+ahash       = { workspace = true }
+tokio       = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+rand     = { workspace = true }
+tempfile = { workspace = true }
