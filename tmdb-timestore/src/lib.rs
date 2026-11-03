@@ -19,6 +19,12 @@ pub use wal::{Wal, WalRecord, WalStopReason, Recovery as WalRecovery};
 pub use ttl::{TtlManager, TtlConfig};
 pub use table::Table;
 
+/// File holding a table's schema inside its data directory.
+///
+/// Segments and the log carry rows but not the column list they belong to, so
+/// this file is the only thing that lets a table be reopened after a restart.
+pub const META_FILE_NAME: &str = "tmdb.meta";
+
 /// Timestamp unit
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TsUnit {
@@ -127,6 +133,46 @@ impl TableMeta {
     pub fn value_columns(&self) -> Vec<&ColumnDef> {
         self.columns.iter().filter(|c| !c.is_tag).collect()
     }
+
+    /// Write the schema to `path`, replacing whatever was there atomically.
+    ///
+    /// A half-written schema is worse than none: the table would reopen with a
+    /// column list that agrees with neither the new nor the old definition.
+    /// Writing to a sibling and renaming means a crash leaves one or the other.
+    pub fn write_to_file(&self, path: &std::path::Path) -> anyhow::Result<()> {
+        use anyhow::Context;
+
+        let tmp = path.with_extension("tmp");
+        let mut file = std::fs::File::create(&tmp)
+            .with_context(|| format!("create schema file {}", tmp.display()))?;
+        serde_json::to_writer(&mut file, self)
+            .with_context(|| format!("serialize schema to {}", tmp.display()))?;
+        file.sync_all()
+            .with_context(|| format!("fsync schema file {}", tmp.display()))?;
+        drop(file);
+        std::fs::rename(&tmp, path)
+            .with_context(|| format!("install schema file {}", path.display()))?;
+        if let Some(dir) = path.parent() {
+            // The rename itself has to reach the disk, or a crash can leave a
+            // directory entry pointing at a file that was never written.
+            let dir_file =
+                std::fs::File::open(dir).with_context(|| format!("open {}", dir.display()))?;
+            dir_file
+                .sync_all()
+                .with_context(|| format!("fsync {}", dir.display()))?;
+        }
+        Ok(())
+    }
+
+    /// Read a schema written by [`TableMeta::write_to_file`].
+    pub fn read_from_file(path: &std::path::Path) -> anyhow::Result<Self> {
+        use anyhow::Context;
+
+        let bytes =
+            std::fs::read(path).with_context(|| format!("read schema file {}", path.display()))?;
+        serde_json::from_slice(&bytes)
+            .with_context(|| format!("parse schema file {}", path.display()))
+    }
 }
 
 #[cfg(test)]
@@ -219,5 +265,96 @@ mod tests {
             let dec = ColumnCodec::decode(&enc, col.data_type()).unwrap();
             assert_eq!(dec, col, "codec lost data for {}", col.data_type());
         }
+    }
+
+    fn sample_meta() -> TableMeta {
+        TableMeta {
+            table_id: 7,
+            name: "metrics".to_string(),
+            ts_unit: TsUnit::Millis,
+            chunk_interval_ms: 86_400_000,
+            retention_days: 30,
+            columns: vec![
+                ColumnDef {
+                    name: "ts".to_string(),
+                    data_type: DataType::Timestamp,
+                    is_tag: false,
+                    nullable: false,
+                    compression: CompressionLevel::Lz4,
+                },
+                ColumnDef {
+                    name: "host".to_string(),
+                    data_type: DataType::String,
+                    is_tag: true,
+                    nullable: true,
+                    compression: CompressionLevel::Zstd(3),
+                },
+            ],
+        }
+    }
+
+    /// The schema is the only thing a restart cannot reconstruct from rows, so
+    /// every field of it has to survive the trip through the table directory.
+    #[test]
+    fn a_schema_round_trips_through_the_table_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(META_FILE_NAME);
+
+        let meta = sample_meta();
+        meta.write_to_file(&path).unwrap();
+
+        let back = TableMeta::read_from_file(&path).unwrap();
+        assert_eq!(back.table_id, meta.table_id);
+        assert_eq!(back.name, meta.name);
+        assert_eq!(back.ts_unit, meta.ts_unit);
+        assert_eq!(back.chunk_interval_ms, meta.chunk_interval_ms);
+        assert_eq!(back.retention_days, meta.retention_days);
+        assert_eq!(back.columns.len(), meta.columns.len());
+        for (a, b) in back.columns.iter().zip(meta.columns.iter()) {
+            assert_eq!(a.name, b.name);
+            assert_eq!(a.data_type, b.data_type);
+            assert_eq!(a.is_tag, b.is_tag);
+            assert_eq!(a.nullable, b.nullable);
+            assert_eq!(a.compression, b.compression);
+        }
+    }
+
+    /// Rewriting a schema must not leave a partially written file behind: a
+    /// reader either sees the old schema or the new one, never a truncated mix.
+    #[test]
+    fn a_rewritten_schema_replaces_the_old_one_completely() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(META_FILE_NAME);
+
+        let mut meta = sample_meta();
+        meta.write_to_file(&path).unwrap();
+
+        meta.columns.truncate(1);
+        meta.retention_days = 1;
+        meta.write_to_file(&path).unwrap();
+
+        let back = TableMeta::read_from_file(&path).unwrap();
+        assert_eq!(back.columns.len(), 1, "old columns survived the rewrite");
+        assert_eq!(back.retention_days, 1);
+
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.ends_with(".tmp"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "temporary schema files left: {:?}",
+            leftovers
+        );
+    }
+
+    /// A directory that is not a table must be reported as such, not as an
+    /// error: the data directory can hold anything else a deployment puts there.
+    #[test]
+    fn a_directory_without_a_schema_is_not_a_table() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(Table::open_stored(dir.path()).unwrap().is_none());
     }
 }

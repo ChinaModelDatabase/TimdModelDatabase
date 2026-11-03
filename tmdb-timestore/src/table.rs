@@ -12,6 +12,7 @@ use crate::memtable::MemTable;
 use crate::metrics::{MetricsSnapshot, TableMetrics};
 use crate::segment::file::{SegmentReader, SegmentWriter};
 use crate::wal::Wal;
+use crate::META_FILE_NAME;
 use crate::{ColumnDef, TableMeta};
 
 /// Column types in schema order, as the segment header records them.
@@ -233,6 +234,27 @@ impl Table {
                 tracing::error!("could not open table in {}: {}", data_dir.display(), e);
                 Self::empty(meta, &data_dir)
             })
+    }
+
+    /// Reopen the table whose schema is stored in `dir`.
+    ///
+    /// Returns `None` when `dir` holds no schema, so a stray directory next to
+    /// the tables is skipped rather than reported as a broken table.
+    pub fn open_stored(dir: impl AsRef<Path>) -> anyhow::Result<Option<Self>> {
+        let meta_path = dir.as_ref().join(META_FILE_NAME);
+        if !meta_path.exists() {
+            return Ok(None);
+        }
+        let meta = TableMeta::read_from_file(&meta_path)?;
+        Ok(Some(Self::open(meta, dir)?))
+    }
+
+    /// Persist the schema so the table can be reopened after a restart.
+    ///
+    /// Segments and the log carry the rows; the schema is the one part of a
+    /// table that nothing else on disk can reconstruct.
+    pub fn save_meta(&self) -> anyhow::Result<()> {
+        self.meta.write_to_file(&self.data_dir.join(META_FILE_NAME))
     }
 
     /// Open a table, loading its segments and replaying its log.

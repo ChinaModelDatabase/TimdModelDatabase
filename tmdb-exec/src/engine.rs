@@ -72,8 +72,12 @@ impl Engine {
     pub fn new(data_dir: impl AsRef<std::path::Path>) -> Self {
         let data_dir = data_dir.as_ref().to_path_buf();
         std::fs::create_dir_all(&data_dir).ok();
+        let tables = dashmap::DashMap::new();
+        for table in reopen_tables(&data_dir) {
+            tables.insert(table.meta.name.clone(), Arc::new(table));
+        }
         Self {
-            tables: dashmap::DashMap::new(),
+            tables,
             data_dir,
             query_cache: Arc::new(QueryCache::new(1000)),
             indexes: dashmap::DashMap::new(),
@@ -112,6 +116,10 @@ impl Engine {
     pub fn create_table(&self, name: &str, meta: TableMeta) -> anyhow::Result<()> {
         let table_dir = self.data_dir.join(name);
         let table = Arc::new(Table::new(meta, &table_dir));
+        // The schema is what lets the table come back after a restart. It has
+        // to be on disk before the table is visible, or a crash between the two
+        // would leave rows nobody can read.
+        table.save_meta()?;
         self.tables.insert(name.to_string(), table);
         Ok(())
     }
@@ -530,6 +538,39 @@ impl Engine {
             .map(|t| t.row_count())
             .unwrap_or(0)
     }
+}
+
+/// Every table that a previous run left in `data_dir`.
+///
+/// A restart that cannot see its own tables leaves perfectly good segments
+/// orphaned: the rows are on disk, but no name points at them. Each table
+/// directory holds its schema next to its segments, so reopening one is a
+/// matter of reading that schema back.
+///
+/// A directory that will not open is reported and skipped rather than failing
+/// the whole startup: one unreadable table should not take down the others.
+fn reopen_tables(data_dir: &std::path::Path) -> Vec<Table> {
+    let Ok(entries) = std::fs::read_dir(data_dir) else {
+        return Vec::new();
+    };
+
+    let mut tables = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        match Table::open_stored(&path) {
+            Ok(Some(table)) => tables.push(table),
+            Ok(None) => {}
+            Err(e) => tracing::warn!(
+                "skipping {}: {}; its rows stay on disk but are not queryable",
+                path.display(),
+                e
+            ),
+        }
+    }
+    tables
 }
 
 /// Query result
@@ -989,6 +1030,97 @@ mod tests {
         assert!(engine
             .execute("INSERT INTO metrics VALUES (1000, 'a', 'eu', 'not-a-number')")
             .is_err());
+    }
+
+    #[test]
+    fn a_restarted_engine_still_sees_the_tables_it_created() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let engine = engine_with_metrics(dir.path());
+            engine
+                .execute("INSERT INTO metrics VALUES (1000, 'a', 'eu', 1.5)")
+                .unwrap();
+            engine.flush_table("metrics").unwrap();
+        }
+
+        let restarted = Engine::new(dir.path());
+        let (_, out) = rows(restarted.execute("SELECT host FROM metrics").unwrap());
+        assert_eq!(out.len(), 1);
+        assert_eq!(str_at(&out[0], 0), "a");
+    }
+
+    #[test]
+    fn a_restarted_engine_recovers_rows_that_were_never_flushed() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let engine = engine_with_metrics(dir.path());
+            engine
+                .execute(
+                    "INSERT INTO metrics VALUES (1000, 'a', 'eu', 1.5), (2000, 'b', 'us', 2.5)",
+                )
+                .unwrap();
+        }
+
+        let restarted = Engine::new(dir.path());
+        let (_, out) = rows(restarted.execute("SELECT count(*) FROM metrics").unwrap());
+        assert_eq!(i64_at(&out[0], 0), 2);
+    }
+
+    #[test]
+    fn a_dropped_table_does_not_come_back_after_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let engine = engine_with_metrics(dir.path());
+            engine.execute("DROP TABLE metrics").unwrap();
+        }
+
+        let restarted = Engine::new(dir.path());
+        assert!(restarted.execute("SELECT * FROM metrics").is_err());
+    }
+
+    #[test]
+    fn a_restarted_engine_still_refuses_a_value_the_schema_rejects() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let engine = engine_with_metrics(dir.path());
+            engine.flush_table("metrics").unwrap();
+            drop(engine);
+        }
+
+        let restarted = Engine::new(dir.path());
+        assert!(restarted
+            .execute("INSERT INTO metrics VALUES (3000, 'c', 'eu', 'not-a-number')")
+            .is_err());
+    }
+
+    /// One damaged schema must not take the healthy tables down with it: the
+    /// rows of every other table are still readable.
+    #[test]
+    fn a_table_with_a_damaged_schema_does_not_hide_the_others() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let engine = engine_with_metrics(dir.path());
+            engine
+                .execute("CREATE TABLE broken (ts TIMESTAMP, v DOUBLE)")
+                .unwrap();
+            engine
+                .execute("INSERT INTO metrics VALUES (1000, 'a', 'eu', 1.5)")
+                .unwrap();
+            engine.flush_table("metrics").unwrap();
+            std::fs::write(
+                dir.path()
+                    .join("broken")
+                    .join(tmdb_timestore::META_FILE_NAME),
+                "{ not json",
+            )
+            .unwrap();
+            drop(engine);
+        }
+
+        let restarted = Engine::new(dir.path());
+        let (_, out) = rows(restarted.execute("SELECT count(*) FROM metrics").unwrap());
+        assert_eq!(i64_at(&out[0], 0), 1);
+        assert!(restarted.execute("SELECT * FROM broken").is_err());
     }
 
     #[test]

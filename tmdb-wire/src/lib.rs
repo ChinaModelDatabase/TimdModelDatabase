@@ -85,6 +85,7 @@ async fn handle_pg_connection(
     // message spans a segment boundary.
     let mut pending: Vec<u8> = Vec::new();
     let mut chunk = vec![0u8; 8192];
+    let mut startup_done = false;
 
     loop {
         let n = stream.read(&mut chunk).await?;
@@ -95,47 +96,73 @@ async fn handle_pg_connection(
 
         // Drain every complete message currently buffered.
         loop {
-            if pending.len() < 4 {
-                break;
-            }
-            let len = i32::from_be_bytes([pending[0], pending[1], pending[2], pending[3]]);
-            if len < 4 {
-                // Nonsense length; drop the connection rather than spin.
-                anyhow::bail!("bad PG message length {}", len);
-            }
-            let total = 4 + len as usize;
-            if pending.len() < total {
-                break;
-            }
-            let msg: Vec<u8> = pending.drain(..total).collect();
-            let body = &msg[4..];
+            // Only the startup packet is untyped. Every message after it opens
+            // with a type byte and carries its length behind it, so reading the
+            // length from offset zero asks for four bytes no client sends.
+            if !startup_done {
+                if pending.len() < 4 {
+                    break;
+                }
+                let len = i32::from_be_bytes([pending[0], pending[1], pending[2], pending[3]]);
+                if len < 4 {
+                    // Nonsense length; drop the connection rather than spin.
+                    anyhow::bail!("bad PG message length {}", len);
+                }
+                // A PostgreSQL length counts itself: the four bytes of the
+                // length plus everything after them.
+                let total = len as usize;
+                if pending.len() < total {
+                    break;
+                }
+                let msg: Vec<u8> = pending.drain(..total).collect();
+                let code = if msg.len() >= 8 {
+                    i32::from_be_bytes([msg[4], msg[5], msg[6], msg[7]])
+                } else {
+                    0
+                };
 
-            // The first message on a connection is untyped: its body starts
-            // with a request code rather than a message type byte.
-            if body.len() >= 4 {
-                let code = i32::from_be_bytes([body[0], body[1], body[2], body[3]]);
                 match code {
                     PG_SSL_REQUEST => {
-                        // Refuse TLS; the client then continues in cleartext.
+                        // Refuse TLS; the client then continues in cleartext,
+                        // and the packet that follows is untyped too.
                         stream.write_all(b"N").await?;
                         continue;
                     }
                     PG_CANCEL_REQUEST => continue,
                     PG_PROTOCOL_VERSION_3 => {
-                        let resp = conn.handle_startup(body);
+                        startup_done = true;
+                        // The startup handler reads its own length field, so it
+                        // takes the whole message.
+                        let resp = conn.handle_startup(&msg);
                         stream.write_all(&resp).await?;
                         continue;
                     }
-                    _ => {}
+                    other => anyhow::bail!("unknown startup request code {}", other),
                 }
             }
 
-            let msg_type = body[0];
+            if pending.len() < 5 {
+                break;
+            }
+            let msg_type = pending[0];
+            let len = i32::from_be_bytes([pending[1], pending[2], pending[3], pending[4]]);
+            if len < 4 {
+                anyhow::bail!("bad PG message length {}", len);
+            }
+            let total = 1 + len as usize;
+            if pending.len() < total {
+                break;
+            }
+            let msg: Vec<u8> = pending.drain(..total).collect();
+            // The handlers read their own length field, so they take the message
+            // with only the type byte removed; the payload starts behind it.
+            let frame = &msg[1..];
+            let payload = &msg[5..];
+
             match msg_type {
                 b'Q' => {
-                    // Simple query: body is the length then a NUL-terminated
-                    // string.
-                    let sql = String::from_utf8_lossy(&body[5..]).trim_end_matches('\0').to_string();
+                    // Simple query: the payload is the SQL, NUL-terminated.
+                    let sql = String::from_utf8_lossy(payload).trim_end_matches('\0').to_string();
                     tracing::info!("PG query: {}", sql);
                     let resp = conn.execute_query(&sql, &engine);
                     stream.write_all(&resp).await?;
@@ -143,7 +170,7 @@ async fn handle_pg_connection(
                 b'X' => return Ok(()),
                 b'p' => {
                     // SASLInitialResponse and SASLResponse share the type byte.
-                    let resp = conn.handle_sasl(body);
+                    let resp = conn.handle_sasl(frame);
                     stream.write_all(&resp).await?;
                 }
                 other => {
@@ -151,7 +178,7 @@ async fn handle_pg_connection(
                     // the connection's own dispatcher, which knows the message
                     // grammar and answers unknown types with a protocol error.
                     if matches!(other, b'P' | b'B' | b'D' | b'E' | b'C' | b'S') {
-                        let resp = conn.handle_extended_query(other, body, &engine);
+                        let resp = conn.handle_extended_query(other, frame, &engine);
                         stream.write_all(&resp).await?;
                     } else {
                         tracing::warn!("unsupported PG message type {:?}", other as char);
@@ -179,37 +206,53 @@ async fn handle_mysql_connection(
     let handshake = conn.build_handshake();
     stream.write_all(&handshake).await?;
 
-    let mut buf = vec![0u8; 4096];
+    // Packet framing, same reasoning as on the PostgreSQL side: a header is
+    // three bytes of length and one of sequence id, and one read may hold a
+    // whole packet, part of one, or several. Treating a read as a packet read
+    // the command byte one position late (a MySQL header is four bytes) and
+    // lost every packet that shared a segment with another.
+    let mut pending: Vec<u8> = Vec::new();
+    let mut chunk = vec![0u8; 8192];
 
     loop {
-        let n = stream.read(&mut buf).await?;
+        let n = stream.read(&mut chunk).await?;
         if n == 0 {
             break;
         }
+        pending.extend_from_slice(&chunk[..n]);
 
-        if !conn.is_authenticated() {
-            let resp = conn.handle_auth(&buf[..n]);
-            stream.write_all(&resp).await?;
-            continue;
-        }
+        loop {
+            if pending.len() < 4 {
+                break;
+            }
+            let len = pending[0] as usize | (pending[1] as usize) << 8 | (pending[2] as usize) << 16;
+            let total = 4 + len;
+            if pending.len() < total {
+                break;
+            }
+            let packet: Vec<u8> = pending.drain(..total).collect();
 
-        // Parse COM_QUERY
-        if n > 4 {
-            let _len = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
-            let _seq = buf[4];
-            let cmd = buf[5];
+            if !conn.is_authenticated() {
+                let resp = conn.handle_auth(&packet);
+                stream.write_all(&resp).await?;
+                continue;
+            }
+
+            let Some((cmd, args)) = packet.split_at(4).1.split_first().map(|(c, rest)| (*c, rest)) else {
+                continue;
+            };
 
             match cmd {
                 0x03 => {
                     // COM_QUERY
-                    let sql = String::from_utf8_lossy(&buf[6..n]).to_string();
+                    let sql = String::from_utf8_lossy(args).to_string();
                     tracing::info!("MySQL query: {}", sql);
                     let resp = conn.execute_query(&sql, &engine);
                     stream.write_all(&resp).await?;
                 }
                 0x01 => {
                     // COM_QUIT
-                    break;
+                    return Ok(());
                 }
                 0x0E => {
                     // COM_PING

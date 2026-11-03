@@ -103,8 +103,19 @@ impl MysqlConnection {
             return self.build_ok();
         }
 
-        let _len = buf.get_u32();
+        // A MySQL packet header is three bytes of length followed by a
+        // sequence id. Reading a four-byte length here swallowed the first
+        // byte of the payload and shifted every field after it by one.
+        buf.advance(3);
         let _seq = buf.get_u8();
+
+        // Handshake response layout: four bytes of capability flags, four of
+        // maximum packet size, one of charset and 23 reserved, before the user
+        // name. Starting anywhere else reads the flags as part of the name.
+        let fixed_prefix = 4 + 4 + 1 + 23;
+        if buf.remaining() > fixed_prefix {
+            buf.advance(fixed_prefix);
+        }
 
         let mut username = Vec::new();
         while buf.has_remaining() {

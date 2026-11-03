@@ -10,10 +10,15 @@ use tmdb_timestore::DataType;
 const PG_PROTOCOL_VERSION: i32 = 196608; // 3.0
 
 /// SASL mechanism offered at authentication.
-const SCRAM_MECHANISM: &[u8] = b"SCRAM-SHA-256\0";
+///
+/// This is a *list* of NUL-terminated names closed by an empty string, not a
+/// bare string: the trailing empty name is what tells a client the list ends.
+/// Without it libpq answers "invalid list of authentication mechanisms" and the
+/// connection dies before a password is ever sent.
+const SCRAM_MECHANISM: &[u8] = b"SCRAM-SHA-256\0\0";
 
-/// The severity field every ErrorResponse starts with.
-const ERROR_SEVERITY: &[u8] = b"SERROR\0";
+/// Severity value every ErrorResponse reports. The field code 'S' precedes it.
+const ERROR_SEVERITY: &[u8] = b"ERROR\0";
 
 /// Source of the password for a given user name.
 ///
@@ -154,10 +159,12 @@ impl PgConnection {
 
         let mut resp = BytesMut::new();
         resp.put_u8(b'R');
-        resp.put_i32(4 + 4 + server_first.len() as i32 + 1);
+        // The payload ends where the message ends: the SASL data is not
+        // NUL-terminated, and appending one makes the declared length disagree
+        // with what libpq reads.
+        resp.put_i32(4 + 4 + server_first.len() as i32);
         resp.put_i32(11); // SASLContinue
         resp.put_slice(server_first.as_bytes());
-        resp.put_u8(0);
         resp.to_vec()
     }
 
@@ -184,10 +191,9 @@ impl PgConnection {
         // AuthenticationSASLFinal, then AuthenticationOk, then ReadyForQuery.
         let mut sasl_final = BytesMut::new();
         sasl_final.put_u8(b'R');
-        sasl_final.put_i32(4 + 4 + server_final.len() as i32 + 1);
+        sasl_final.put_i32(4 + 4 + server_final.len() as i32);
         sasl_final.put_i32(12);
         sasl_final.put_slice(server_final.as_bytes());
-        sasl_final.put_u8(0);
         resp.extend_from_slice(&sasl_final);
 
         resp.put_u8(b'R');
@@ -404,8 +410,9 @@ impl PgConnection {
         match engine.execute(sql) {
             Ok(result) => encode_result_set(&result),
             Err(e) => {
-                let msg = format!("ERROR: {}", e);
-                let mut out = self.build_error_response(&msg);
+                // The severity already says ERROR; repeating it in the message
+                // makes every client print it twice.
+                let mut out = self.build_error_response(&e.to_string());
                 // Close the exchange even after a failure, or the client waits
                 // for a reply that never comes.
                 let mut ready = BytesMut::new();
@@ -419,16 +426,21 @@ impl PgConnection {
     }
 
     pub fn build_error_response(&self, msg: &str) -> Vec<u8> {
-        // An ErrorResponse is a sequence of NUL-terminated fields, so the
-        // length must cover the severity field as well as the message. It used
-        // to omit it, so the client read past the end of the message and lost
-        // sync with the stream.
+        // An ErrorResponse is a list of fields, each a code byte followed by a
+        // NUL-terminated value, closed by a zero byte. Writing the message as
+        // more text inside the severity field leaves a client unable to find
+        // the boundary between the two, and it discards the whole message.
         let mut resp = BytesMut::new();
         resp.put_u8(b'E');
-        resp.put_i32(4 + ERROR_SEVERITY.len() as i32 + msg.len() as i32 + 1);
-        resp.put_slice(ERROR_SEVERITY);
-        resp.put_slice(msg.as_bytes());
-        resp.put_u8(0);
+        let mut fields = BytesMut::new();
+        fields.put_u8(b'S'); // severity
+        fields.put_slice(ERROR_SEVERITY);
+        fields.put_u8(b'M'); // human-readable message
+        fields.put_slice(msg.as_bytes());
+        fields.put_u8(0);
+        fields.put_u8(0); // end of the field list
+        resp.put_i32(4 + fields.len() as i32);
+        resp.extend_from_slice(&fields);
         resp.to_vec()
     }
 
@@ -476,7 +488,8 @@ fn encode_result_set(result: &QueryResult) -> Vec<u8> {
                 desc.put_i16(0); // column attr
                 desc.put_i32(pg_type_oid(&ty));
                 desc.put_i16(-1); // varlen
-                desc.put_i32(0); // format (text)
+                desc.put_i32(-1); // type modifier
+                desc.put_i16(0); // format (text)
             }
             resp.put_i32(4 + desc.len() as i32);
             resp.extend_from_slice(&desc);

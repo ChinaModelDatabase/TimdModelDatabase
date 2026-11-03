@@ -105,6 +105,115 @@ fn connected() -> (tempfile::TempDir, Engine, PgConnection) {
     (dir, engine, conn)
 }
 
+/// The SASL payload in AuthenticationSASLContinue is delimited by the message
+/// length, not by a NUL. Sending one anyway makes libpq reject the exchange
+/// with "malformed SCRAM message (length mismatch)" and drop the connection.
+#[test]
+fn the_sasl_continue_message_carries_no_trailing_nul() {
+    let mut users = StaticUsers::new();
+    users.insert("alice", "s3cret");
+    let mut conn = PgConnection::with_verifier(Arc::new(users));
+    conn.handle_startup(&startup_packet("alice", "db"));
+
+    let initial = format!("n,,n=alice,r={}", client_nonce(b'c'));
+    let mut msg = Vec::new();
+    msg.extend_from_slice(&(8 + initial.len() as i32).to_be_bytes());
+    msg.extend_from_slice(b"SCRAM-SHA-256\0");
+    msg.extend_from_slice(&(initial.len() as i32).to_be_bytes());
+    msg.extend_from_slice(initial.as_bytes());
+
+    let bytes = conn.handle_sasl(&msg);
+    assert_eq!(bytes[0], b'R', "expected an auth message");
+    let declared = i32::from_be_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]) as usize;
+    assert_eq!(
+        declared,
+        bytes.len() - 1,
+        "the declared length must cover exactly the bytes sent"
+    );
+    let payload = &bytes[5..];
+    assert_eq!(&payload[..4], &11i32.to_be_bytes(), "expected SASLContinue");
+    assert!(
+        !payload[4..].ends_with(&[0]),
+        "the SASL data must not be NUL-terminated"
+    );
+}
+
+/// The client walks each column descriptor field by field. One missing or
+/// wrongly sized field desynchronises it for every column after it, so the
+/// layout has to be the one the protocol documents: name, table OID, column
+/// attribute, type OID, type size, type modifier, format code.
+#[test]
+fn every_row_description_field_follows_the_documented_layout() {
+    let (_dir, _engine, conn) = seeded();
+    let bytes = conn.execute_query("SELECT ts, host, value FROM metrics", &_engine);
+    let msgs = unframe(&bytes);
+    let body = &msgs[0].1;
+
+    let count = i16::from_be_bytes([body[0], body[1]]) as usize;
+    let mut pos = 2;
+    let mut oids = Vec::new();
+    for _ in 0..count {
+        let end = body[pos..]
+            .iter()
+            .position(|b| *b == 0)
+            .expect("every column name is NUL-terminated")
+            + pos;
+        pos = end + 1; // name
+        pos += 4; // table OID
+        pos += 2; // column attribute number
+        oids.push(i32::from_be_bytes([body[pos], body[pos + 1], body[pos + 2], body[pos + 3]]));
+        pos += 4; // type OID
+        pos += 2; // type size
+        pos += 4; // type modifier
+        assert_eq!(
+            i16::from_be_bytes([body[pos], body[pos + 1]]),
+            0,
+            "values are sent in the text format"
+        );
+        pos += 2; // format code
+    }
+    assert_eq!(
+        pos,
+        body.len(),
+        "leftover bytes after the last descriptor: the layout does not match"
+    );
+    assert_eq!(oids, vec![1114, 25, 701], "timestamp, text, float8");
+}
+
+/// An ErrorResponse is a list of typed fields, not a severity followed by
+/// loose text: without the message field code a client cannot tell where the
+/// message starts and rejects the whole message.
+#[test]
+fn an_error_response_labels_its_severity_and_its_message() {
+    let (_dir, _engine, conn) = connected();
+    let bytes = conn.execute_query("SELECT * FROM missing", &_engine);
+    let body = &unframe(&bytes)[0].1;
+
+    assert_eq!(body[0], b'S', "severity field code");
+    let end = body[1..]
+        .iter()
+        .position(|b| *b == 0)
+        .expect("severity value is NUL-terminated")
+        + 1;
+    assert_eq!(&body[1..end], b"ERROR");
+
+    assert_eq!(body[end + 1], b'M', "message field code");
+    let end2 = body[end + 2..]
+        .iter()
+        .position(|b| *b == 0)
+        .expect("message value is NUL-terminated")
+        + end
+        + 2;
+    let text = String::from_utf8_lossy(&body[end + 2..end2]);
+    assert!(
+        text.starts_with("table 'missing'"),
+        "the severity is its own field, so the message must not repeat it: {:?}",
+        text
+    );
+    assert_eq!(body[end2 + 1], 0, "the field list ends with a zero byte");
+    assert_eq!(end2 + 2, body.len(), "trailing bytes after the field list");
+}
+
 fn seeded() -> (tempfile::TempDir, Engine, PgConnection) {
     let (dir, engine, conn) = connected();
     engine
